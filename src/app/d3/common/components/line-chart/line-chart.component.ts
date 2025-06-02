@@ -116,7 +116,9 @@ export class LineChartComponent {
 
   private readonly yTicksValues = computed(() => {
     const [minY, maxY] = this.visibleExtentY();
-    const tickCount = Math.max(2, Math.round((this.height - this.margin.top - this.margin.bottom) / 40));
+    const maxLabels = 5;
+    const fullTickCount = Math.max(2, Math.round((this.height - this.margin.top - this.margin.bottom) / 40));
+    const tickCount = Math.min(fullTickCount, maxLabels);
     const step = (maxY - minY) / (tickCount - 1);
     return Array.from({ length: tickCount }, (_, i) => minY + i * step);
   });
@@ -209,8 +211,22 @@ export class LineChartComponent {
 
     this.xTicks().forEach((date) => {
       const x = this.xScale()(date);
-      const label = fmtDay(date);
-      ctx.fillText(label, x, this.height - this.margin.bottom + 8);
+      const dayLabel = fmtDay(date);
+
+      ctx.fillText(dayLabel, x, this.height - this.margin.bottom + 8);
+
+      if (date.getUTCDate() === 1) {
+        const monthYearLabel = fmtMY(date);
+        ctx.fillText(monthYearLabel, x, this.height - this.margin.bottom + 20);
+      }
+    });
+
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+
+    this.yTicksValues().forEach((v) => {
+      const y = this.yScale()(v);
+      ctx.fillText(v.toFixed(0), this.margin.left - 8, y);
     });
 
     ctx.beginPath();
