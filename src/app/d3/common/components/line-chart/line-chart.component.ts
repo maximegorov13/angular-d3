@@ -83,7 +83,7 @@ export class LineChartComponent {
     const [x0, x1] = this.xScale().domain().map(Number);
     const data = this.data();
 
-    const bisectDate = d3.bisector<LineChartDataItem, unknown>((d) => +new Date(d.date)).left;
+    const bisectDate = d3.bisector<LineChartDataItem, unknown>((d) => new Date(d.date)).left;
 
     const i0 = bisectDate(data, x0);
     const i1 = bisectDate(data, x1, i0);
@@ -215,7 +215,7 @@ export class LineChartComponent {
 
       ctx.fillText(dayLabel, x, this.height - this.margin.bottom + 8);
 
-      if (date.getUTCDate() === 1) {
+      if (date.getDate() === 1) {
         const monthYearLabel = fmtMY(date);
         ctx.fillText(monthYearLabel, x, this.height - this.margin.bottom + 20);
       }
