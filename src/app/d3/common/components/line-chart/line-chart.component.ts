@@ -5,6 +5,7 @@ import {
   computed,
   effect,
   ElementRef,
+  inject,
   input,
   signal,
   untracked,
@@ -49,6 +50,8 @@ const fmtMY = ruLocale.format('%b %y');
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LineChartComponent {
+  private readonly host = inject(ElementRef<HTMLElement>);
+
   readonly data = input.required<LineChartDataItem[]>();
 
   private readonly chartCanvas = viewChild.required<ElementRef<HTMLCanvasElement>>('chartCanvas');
@@ -58,9 +61,10 @@ export class LineChartComponent {
   private readonly handleLeft = viewChild.required<ElementRef<HTMLDivElement>>('handleLeft');
   private readonly handleRight = viewChild.required<ElementRef<HTMLDivElement>>('handleRight');
 
-  private readonly width = 928;
+  private readonly width = signal(0);
+  private readonly heightHost = signal(0);
   private readonly dzHeight = 40;
-  private readonly height = 500;
+  private readonly chartHeight = computed(() => Math.max(0, this.heightHost() - this.dzHeight - 16 - 8));
   private readonly margin = {
     top: 8,
     right: 8,
@@ -73,7 +77,7 @@ export class LineChartComponent {
 
   private readonly zoomTransform = signal<d3.ZoomTransform>(d3.zoomIdentity);
   private readonly bx0 = signal<number>(this.margin.left);
-  private readonly bx1 = signal<number>(this.width - this.margin.right);
+  private readonly bx1 = signal<number>(this.width() - this.margin.right);
 
   private zoomBehavior!: d3.ZoomBehavior<HTMLCanvasElement, unknown>;
 
@@ -81,7 +85,7 @@ export class LineChartComponent {
     d3
       .scaleUtc()
       .domain(d3.extent(this.data(), (d) => new Date(d.date)) as [Date, Date])
-      .range([this.margin.left, this.width - this.margin.right]),
+      .range([this.margin.left, this.width() - this.margin.right]),
   );
 
   private readonly xScale = computed(() => this.zoomTransform().rescaleX(this.baseXScale()));
@@ -116,7 +120,7 @@ export class LineChartComponent {
     d3
       .scaleLinear()
       .domain(this.visibleExtentY())
-      .range([this.height - this.margin.bottom, this.margin.top]),
+      .range([this.chartHeight() - this.margin.bottom, this.margin.top]),
   );
 
   private readonly allYScale = computed(() =>
@@ -126,12 +130,12 @@ export class LineChartComponent {
       .range([this.dzHeight, 0]),
   );
 
-  private readonly xTicks = computed(() => this.xScale().ticks(this.width / 100));
+  private readonly xTicks = computed(() => this.xScale().ticks(this.width() / 100));
 
   private readonly yTicksValues = computed(() => {
     const [minY, maxY] = this.visibleExtentY();
     const maxLabels = 5;
-    const fullTickCount = Math.max(2, Math.round((this.height - this.margin.top - this.margin.bottom) / 40));
+    const fullTickCount = Math.max(2, Math.round((this.chartHeight() - this.margin.top - this.margin.bottom) / 40));
     const tickCount = Math.min(fullTickCount, maxLabels);
     const step = (maxY - minY) / (tickCount - 1);
     return Array.from({ length: tickCount }, (_, i) => minY + i * step);
@@ -143,6 +147,7 @@ export class LineChartComponent {
       this.initDataZoomCanvas();
       this.initZoom();
       this.initBrush();
+      this.observeHostResize();
     });
 
     effect(() => this.drawChart());
@@ -150,18 +155,33 @@ export class LineChartComponent {
 
     effect(() => this.syncBrushWithZoom());
     effect(() => this.syncZoomWithBrush());
+
+    effect(() => {
+      const w = this.width();
+      const h = this.chartHeight();
+
+      this.zoomBehavior
+        .extent([
+          [this.margin.left, 0],
+          [w - this.margin.right, h],
+        ])
+        .translateExtent([
+          [this.margin.left, 0],
+          [w - this.margin.right, h],
+        ]);
+    });
   }
 
   private initChartCanvas(): void {
     const canvas = this.chartCanvas().nativeElement;
-    canvas.width = this.width;
-    canvas.height = this.height;
+    canvas.width = this.width();
+    canvas.height = this.chartHeight();
     this.ctx.set(canvas.getContext('2d'));
   }
 
   private initDataZoomCanvas(): void {
     const canvas = this.dzCanvas().nativeElement;
-    canvas.width = this.width;
+    canvas.width = this.width();
     canvas.height = this.dzHeight;
     this.dzCtx.set(canvas.getContext('2d') as CanvasRenderingContext2D);
   }
@@ -172,15 +192,16 @@ export class LineChartComponent {
       .scaleExtent([1, 30])
       .translateExtent([
         [this.margin.left, 0],
-        [this.width - this.margin.right, this.height],
+        [this.width() - this.margin.right, this.chartHeight()],
       ])
       .extent([
         [this.margin.left, 0],
-        [this.width - this.margin.right, this.height],
+        [this.width() - this.margin.right, this.chartHeight()],
       ])
       .on('zoom', (event) => {
         this.zoomTransform.set(event.transform);
       });
+
     d3.select(this.chartCanvas().nativeElement).call(this.zoomBehavior);
   }
 
@@ -188,7 +209,7 @@ export class LineChartComponent {
     const ctx = this.ctx();
     if (!ctx) return;
 
-    ctx.clearRect(0, 0, this.width, this.height);
+    ctx.clearRect(0, 0, this.width(), this.chartHeight());
 
     this.drawGrid(ctx);
     this.drawAxes(ctx);
@@ -200,15 +221,15 @@ export class LineChartComponent {
     this.xTicks().forEach((t) => {
       const x = this.xScale()(t);
       ctx.moveTo(x, this.margin.top);
-      ctx.lineTo(x, this.height - this.margin.bottom);
+      ctx.lineTo(x, this.chartHeight() - this.margin.bottom);
     });
     this.yTicksValues().forEach((v) => {
       const y = this.yScale()(v);
       ctx.moveTo(this.margin.left, y);
-      ctx.lineTo(this.width - this.margin.right, y);
+      ctx.lineTo(this.width() - this.margin.right, y);
     });
-    ctx.moveTo(this.width - this.margin.right, this.margin.top);
-    ctx.lineTo(this.width - this.margin.right, this.height - this.margin.bottom);
+    ctx.moveTo(this.width() - this.margin.right, this.margin.top);
+    ctx.lineTo(this.width() - this.margin.right, this.chartHeight() - this.margin.bottom);
     ctx.strokeStyle = '#d4d7deff';
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -216,10 +237,10 @@ export class LineChartComponent {
 
   private drawAxes(ctx: CanvasRenderingContext2D): void {
     ctx.beginPath();
-    ctx.moveTo(this.margin.left, this.height - this.margin.bottom);
-    ctx.lineTo(this.width - this.margin.right, this.height - this.margin.bottom);
+    ctx.moveTo(this.margin.left, this.chartHeight() - this.margin.bottom);
+    ctx.lineTo(this.width() - this.margin.right, this.chartHeight() - this.margin.bottom);
     ctx.moveTo(this.margin.left, this.margin.top);
-    ctx.lineTo(this.margin.left, this.height - this.margin.bottom);
+    ctx.lineTo(this.margin.left, this.chartHeight() - this.margin.bottom);
     ctx.strokeStyle = '#d4d7deff';
     ctx.lineWidth = 2;
     ctx.stroke();
@@ -233,11 +254,11 @@ export class LineChartComponent {
       const x = this.xScale()(date);
       const dayLabel = fmtDay(date);
 
-      ctx.fillText(dayLabel, x, this.height - this.margin.bottom + 8);
+      ctx.fillText(dayLabel, x, this.chartHeight() - this.margin.bottom + 8);
 
       if (date.getDate() === 1) {
         const monthYearLabel = fmtMY(date);
-        ctx.fillText(monthYearLabel, x, this.height - this.margin.bottom + 20);
+        ctx.fillText(monthYearLabel, x, this.chartHeight() - this.margin.bottom + 20);
       }
     });
 
@@ -267,13 +288,13 @@ export class LineChartComponent {
   private drawDataZoom(): void {
     const ctx = this.dzCtx();
     if (!ctx) return;
-    ctx.clearRect(0, 0, this.width, this.dzHeight);
+    ctx.clearRect(0, 0, this.width(), this.dzHeight);
 
     ctx.beginPath();
     ctx.moveTo(this.margin.left, 0);
-    ctx.lineTo(this.width - this.margin.right, 0);
+    ctx.lineTo(this.width() - this.margin.right, 0);
     ctx.moveTo(this.margin.left, this.dzHeight);
-    ctx.lineTo(this.width - this.margin.right, this.dzHeight);
+    ctx.lineTo(this.width() - this.margin.right, this.dzHeight);
     ctx.strokeStyle = '#d4d7de';
     ctx.lineWidth = 1;
     ctx.stroke();
@@ -327,7 +348,7 @@ export class LineChartComponent {
       if (!mode) return;
 
       const min = this.margin.left;
-      const max = this.width - this.margin.right;
+      const max = this.width() - this.margin.right;
       let x0 = this.bx0();
       let x1 = this.bx1();
       const cx = e.clientX;
@@ -388,7 +409,7 @@ export class LineChartComponent {
     const span = Math.abs(x1 - x0);
     if (!span) return;
 
-    const full = this.width - this.margin.left - this.margin.right;
+    const full = this.width() - this.margin.left - this.margin.right;
     const k = full / span;
     const tx = this.margin.left - Math.min(x0, x1) * k;
     const t = d3.zoomIdentity.translate(tx, 0).scale(k);
@@ -412,5 +433,30 @@ export class LineChartComponent {
       this.bx0.set(this.baseXScale()(d0));
       this.bx1.set(this.baseXScale()(d1));
     });
+  }
+
+  private observeHostResize(): void {
+    const ro = new ResizeObserver((entries) => {
+      const [prevD0, prevD1] = this.xScale().domain();
+
+      const { width, height } = entries[0].contentRect;
+      this.width.set(width);
+      this.heightHost.set(height);
+
+      const chart = this.chartCanvas().nativeElement;
+      const dz = this.dzCanvas().nativeElement;
+      chart.width = width;
+      chart.height = this.chartHeight();
+      dz.width = width;
+      dz.height = this.dzHeight;
+
+      queueMicrotask(() => {
+        const nx0 = this.baseXScale()(prevD0);
+        const nx1 = this.baseXScale()(prevD1);
+        this.setBrush(nx0, nx1);
+      });
+    });
+
+    ro.observe(this.host.nativeElement);
   }
 }
