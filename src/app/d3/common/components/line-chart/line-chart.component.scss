@@ -3,6 +3,75 @@
   display: block;
 }
 
+.chart-container,
+.data-zoom-container {
+  position: relative;
+}
+
 .data-zoom-container {
   margin-top: 16px;
+  height: 40px;
+}
+
+.brush {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+}
+
+.brush__selection {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: rgba(#cde1ff, 0.5);
+  cursor: move;
+  pointer-events: auto;
+  border-radius: 2px;
+}
+
+.brush__handle {
+  position: absolute;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  background: #3171ee;
+  border: 1px solid #3061bf;
+  cursor: ew-resize;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 2px;
+
+  & .circle {
+    width: 2px;
+    height: 2px;
+    border-radius: 1px;
+    background: #fbffff;
+  }
+
+  &::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    background: rgba(#cde1ff, 0.5);
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+
+  &:hover::after {
+    opacity: 0;
+  }
+}
+
+.brush__handle--l {
+  left: 0;
+  border-radius: 2px 0 0 2px;
+}
+
+.brush__handle--r {
+  right: 0;
+  border-radius: 0 2px 2px 0;
 }

@@ -7,6 +7,7 @@ import {
   ElementRef,
   input,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import * as d3 from 'd3';
@@ -48,10 +49,14 @@ const fmtMY = ruLocale.format('%b %y');
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class LineChartComponent {
+  readonly data = input.required<LineChartDataItem[]>();
+
   private readonly chartCanvas = viewChild.required<ElementRef<HTMLCanvasElement>>('chartCanvas');
   private readonly dzCanvas = viewChild.required<ElementRef<HTMLCanvasElement>>('dataZoomCanvas');
 
-  readonly data = input.required<LineChartDataItem[]>();
+  private readonly brushSel = viewChild.required<ElementRef<HTMLDivElement>>('brushSel');
+  private readonly handleLeft = viewChild.required<ElementRef<HTMLDivElement>>('handleLeft');
+  private readonly handleRight = viewChild.required<ElementRef<HTMLDivElement>>('handleRight');
 
   private readonly width = 928;
   private readonly dzHeight = 40;
@@ -66,9 +71,11 @@ export class LineChartComponent {
   private ctx = signal<CanvasRenderingContext2D | null>(null);
   private dzCtx = signal<CanvasRenderingContext2D | null>(null);
 
-  private zoomBehavior!: d3.ZoomBehavior<HTMLCanvasElement, unknown>;
-  private brushBehavior!: d3.BrushBehavior<unknown>;
   private readonly zoomTransform = signal<d3.ZoomTransform>(d3.zoomIdentity);
+  private readonly bx0 = signal<number>(this.margin.left);
+  private readonly bx1 = signal<number>(this.width - this.margin.right);
+
+  private zoomBehavior!: d3.ZoomBehavior<HTMLCanvasElement, unknown>;
 
   private readonly baseXScale = computed(() =>
     d3
@@ -112,6 +119,13 @@ export class LineChartComponent {
       .range([this.height - this.margin.bottom, this.margin.top]),
   );
 
+  private readonly allYScale = computed(() =>
+    d3
+      .scaleLinear()
+      .domain(d3.extent(this.data(), (d) => d.value) as [number, number])
+      .range([this.dzHeight, 0]),
+  );
+
   private readonly xTicks = computed(() => this.xScale().ticks(this.width / 100));
 
   private readonly yTicksValues = computed(() => {
@@ -123,22 +137,19 @@ export class LineChartComponent {
     return Array.from({ length: tickCount }, (_, i) => minY + i * step);
   });
 
-  private readonly dzYScale = computed(() =>
-    d3
-      .scaleLinear()
-      .domain(d3.extent(this.data(), (d) => d.value) as [number, number])
-      .range([this.dzHeight, 0]),
-  );
-
   constructor() {
     afterNextRender(() => {
       this.initChartCanvas();
       this.initDataZoomCanvas();
       this.initZoom();
+      this.initBrush();
     });
 
     effect(() => this.drawChart());
     effect(() => this.drawDataZoom());
+
+    effect(() => this.syncBrushWithZoom());
+    effect(() => this.syncZoomWithBrush());
   }
 
   private initChartCanvas(): void {
@@ -176,8 +187,15 @@ export class LineChartComponent {
   private drawChart(): void {
     const ctx = this.ctx();
     if (!ctx) return;
+
     ctx.clearRect(0, 0, this.width, this.height);
 
+    this.drawGrid(ctx);
+    this.drawAxes(ctx);
+    this.drawDataLine(ctx);
+  }
+
+  private drawGrid(ctx: CanvasRenderingContext2D): void {
     ctx.beginPath();
     this.xTicks().forEach((t) => {
       const x = this.xScale()(t);
@@ -194,7 +212,9 @@ export class LineChartComponent {
     ctx.strokeStyle = '#d4d7deff';
     ctx.lineWidth = 1;
     ctx.stroke();
+  }
 
+  private drawAxes(ctx: CanvasRenderingContext2D): void {
     ctx.beginPath();
     ctx.moveTo(this.margin.left, this.height - this.margin.bottom);
     ctx.lineTo(this.width - this.margin.right, this.height - this.margin.bottom);
@@ -228,7 +248,9 @@ export class LineChartComponent {
       const y = this.yScale()(v);
       ctx.fillText(v.toFixed(0), this.margin.left - 8, y);
     });
+  }
 
+  private drawDataLine(ctx: CanvasRenderingContext2D): void {
     ctx.beginPath();
     const line = d3
       .line<LineChartDataItem>()
@@ -252,7 +274,7 @@ export class LineChartComponent {
     ctx.lineTo(this.width - this.margin.right, 0);
     ctx.moveTo(this.margin.left, this.dzHeight);
     ctx.lineTo(this.width - this.margin.right, this.dzHeight);
-    ctx.strokeStyle = '#d4d7deff';
+    ctx.strokeStyle = '#d4d7de';
     ctx.lineWidth = 1;
     ctx.stroke();
 
@@ -260,12 +282,135 @@ export class LineChartComponent {
     const dzLine = d3
       .line<LineChartDataItem>()
       .x((d) => this.baseXScale()(new Date(d.date)))
-      .y((d) => this.dzYScale()(d.value));
+      .y((d) => this.allYScale()(d.value));
     const path = dzLine(this.data());
     if (!path) return;
     const path2d = new Path2D(path);
     ctx.strokeStyle = '#3171eeff';
     ctx.lineWidth = 1;
     ctx.stroke(path2d);
+  }
+
+  private initBrush(): void {
+    const sel = this.brushSel().nativeElement;
+    const hl = this.handleLeft().nativeElement;
+    const hr = this.handleRight().nativeElement;
+
+    type Mode = 'move' | 'l' | 'r' | null;
+    let mode: Mode = null;
+    let grab = 0;
+    let width = 0;
+
+    const startDrag = (m: Mode) => (e: MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      mode = m;
+      const x0 = this.bx0();
+      const x1 = this.bx1();
+      const cx = e.clientX;
+
+      if (m === 'move') {
+        grab = cx - x0;
+        width = x1 - x0;
+      } else if (m === 'l') {
+        grab = cx - x0;
+      } else if (m === 'r') {
+        grab = cx - x1;
+      }
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+
+    const onMove = (e: MouseEvent) => {
+      if (!mode) return;
+
+      const min = this.margin.left;
+      const max = this.width - this.margin.right;
+      let x0 = this.bx0();
+      let x1 = this.bx1();
+      const cx = e.clientX;
+
+      switch (mode) {
+        case 'move': {
+          x0 = cx - grab;
+          x1 = x0 + width;
+
+          if (x0 < min) {
+            x1 += min - x0;
+            x0 = min;
+          }
+
+          if (x1 > max) {
+            x0 -= x1 - max;
+            x1 = max;
+          }
+
+          break;
+        }
+
+        case 'l': {
+          x0 = Math.max(min, Math.min(cx - grab, max));
+          break;
+        }
+
+        case 'r': {
+          x1 = Math.max(min, Math.min(cx - grab, max));
+          break;
+        }
+      }
+
+      if (x0 > x1) {
+        [x0, x1] = [x1, x0];
+        mode = mode === 'l' ? 'r' : mode === 'r' ? 'l' : mode;
+        grab = -grab;
+      }
+
+      this.setBrush(x0, x1);
+    };
+
+    const onUp = () => {
+      mode = null;
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+
+    sel.addEventListener('mousedown', startDrag('move'));
+    hl.addEventListener('mousedown', startDrag('l'));
+    hr.addEventListener('mousedown', startDrag('r'));
+  }
+
+  private setBrush(x0: number, x1: number): void {
+    this.bx0.set(x0);
+    this.bx1.set(x1);
+
+    const span = Math.abs(x1 - x0);
+    if (!span) return;
+
+    const full = this.width - this.margin.left - this.margin.right;
+    const k = full / span;
+    const tx = this.margin.left - Math.min(x0, x1) * k;
+    const t = d3.zoomIdentity.translate(tx, 0).scale(k);
+
+    this.zoomTransform.set(t);
+    d3.select(this.chartCanvas().nativeElement).call(this.zoomBehavior.transform, t);
+  }
+
+  private syncBrushWithZoom(): void {
+    const l = Math.min(this.bx0(), this.bx1());
+    const w = Math.abs(this.bx1() - this.bx0());
+
+    const sel = this.brushSel().nativeElement;
+    sel.style.left = `${l}px`;
+    sel.style.width = `${w}px`;
+  }
+
+  private syncZoomWithBrush(): void {
+    const [d0, d1] = this.xScale().domain();
+    untracked(() => {
+      this.bx0.set(this.baseXScale()(d0));
+      this.bx1.set(this.baseXScale()(d1));
+    });
   }
 }
